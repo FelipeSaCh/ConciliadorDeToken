@@ -163,9 +163,9 @@ def inyectar_columnas(wb, nombre_hoja, df_res, dict_auto):
         val = encabezado(c)
         if 'DETALLE' in val:
             col_tercero = c
-        elif 'NIT' in val or 'C.C' in val:
+        elif re.match(r'^(NIT|C\.C)', val) and not col_nit:
             col_nit = c
-        elif 'TIPO' in val:
+        elif 'TIPO' in val and not col_tipo:
             col_tipo = c
     if not col_tercero:
         return
