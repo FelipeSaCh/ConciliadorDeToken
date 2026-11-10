@@ -156,7 +156,6 @@ CONCEPTO_POR_CUENTA_RETENCION = {  # subcuenta 2365 usada -> concepto (prima sob
 # Comentario del listado de autorretenedores -> tratamiento en las alertas de retención (gana la primera coincidencia).
 #   no_sujeto: no se exige retención | agropecuario: base mínima y tarifa de productos agropecuarios
 #   tarifa_reducida: no se compara la tarifa de la cuenta | observacion: solo informa (revisión manual)
-# Todo tratamiento distinto de autorretenedor/SIMPLE deja una alerta "Tratamiento especial por listado…" en el comprobante.
 TRATAMIENTOS_LISTADO = (
     ("AUTORRET", "no_sujeto", "es autorretenedor: él mismo se practica la retención en la fuente"),
     ("SIMPLE", "no_sujeto", "pertenece al régimen SIMPLE: no se le practica retención en la fuente (art. 911 E.T.)"),
@@ -236,6 +235,9 @@ INFO_PERIODICIDAD_IVA = (
 # Parámetros tributarios editables desde la app (UVT y bases mínimas). Los valores de arriba son los de fábrica.
 ARCHIVO_PARAMETROS = CARPETA_AUTORRETENEDORES / "parametros_tributarios.json"
 ARCHIVO_PARAMETROS_LOCAL = BASE_DIR / "parametros_tributarios.json"
+# Tabla de retenciones: solo se revisan los conceptos con cuenta (col. F); tarifa y base (UVT) salen de la tabla
+ARCHIVO_TABLA_RETENCIONES = CARPETA_AUTORRETENEDORES / "TABLA_DE_RETENCIONES.xlsx"
+ARCHIVO_TABLA_RETENCIONES_LOCAL = BASE_DIR / "TABLA_DE_RETENCIONES.xlsx"
 CONCEPTOS_BASE_MINIMA = ("compras", "servicios", "arrendamientos", "honorarios", "combustibles", "agropecuario")
 INFO_PARAMETROS_UVT = (
     "UVT por año: valor fijado cada año por resolución de la DIAN.\n\n"
@@ -286,42 +288,22 @@ INFO_CONCEPTOS = (
 # Guía de alertas (botón "?" en Conciliar y capítulo 11 del manual): (sección, nota, [(alerta, cuándo aparece, qué significa)])
 GUIA_ALERTAS = (
     ("Retención en la fuente (cada comprobante contable)",
-     "Requieren marcar columnas de Retefuente (2365). La base es la suma de las cuentas marcadas como Base, sin los "
-     "impuestos llevados al costo (impuesto al consumo, saludables, IVA mayor valor). El concepto se toma de la cuenta "
-     "de retención usada; si no hay, de lo habitual con ese tercero; si no, de la cuenta de gasto.",
+     "Solo se revisan los conceptos de TABLA_DE_RETENCIONES.xlsx que tienen cuenta asignada; base mínima (UVT) y tarifa "
+     "salen de la tabla según el tipo de NIT (PJ: NIT 8/9 de 9 dígitos; PN: cédula). La base es la suma de las cuentas "
+     "marcadas como Base, sin impuestos llevados al costo.",
      (
          ("Sin retención",
-          "La compra supera la base mínima de su concepto y no se registró retención. No aparece si el proveedor es "
-          "autorretenedor, del régimen SIMPLE o no sujeto, ni si el listado solo pide revisión manual. A los terceros "
-          "marcados \"AGRICOLA\" se les aplica la base mínima agropecuaria e indica la retención esperada al 1,5 %. "
-          "Si al mismo tercero sí se le retuvo en otros comprobantes, lo indica.",
+          "La compra supera la base mínima del concepto de la tabla y no se registró retención.",
           "Retención posiblemente omitida: la empresa responde por ella (art. 370 E.T.). Verifique si se retuvo al pagar."),
          ("Retención practicada a no sujeto",
-          "Se registró retención a un proveedor que no debía tenerla: autorretenedor, régimen SIMPLE, \"abstenerse de "
-          "practicar retención\", \"no sujeto\", patrimonio autónomo, fideicomiso o \"no aplica por\" una norma, "
-          "según el listado de Autorretenedores. La alerta explica por qué el tercero no es sujeto.",
+          "Se retuvo a un proveedor no sujeto según el listado de Autorretenedores o el régimen SIMPLE.",
           "Retención indebida: el proveedor puede pedir el reintegro."),
-         ("Tercero con observación en listado de autorretenedores",
-          "El proveedor está en el listado con otro comentario (p. ej. \"REVISAR FACTURA – REGISTRO EN BOLSA\"). "
-          "Indica si se retuvo o no y qué significa el comentario (bolsa, RGB, Ley 1819, sin ánimo de lucro, etc.). "
-          "Para estos terceros no se alerta \"Sin retención\".",
-          "No es un error: requiere revisión manual (p. ej. en compras por bolsa la retención la practica la bolsa)."),
-         ("Tratamiento especial por listado de autorretenedores",
-          "El tercero tiene en el listado un comentario que cambia la forma de evaluar la retención: no sujeto "
-          "(patrimonio autónomo, fideicomiso, abstenerse, \"no aplica por\"), productos agropecuarios o tarifa "
-          "reducida (ZESE, ZOMAC, 50 %). No aparece para autorretenedores ni régimen SIMPLE.",
-          "Es informativa: deja constancia del criterio que el programa aplicó a ese comprobante y por qué. "
-          "Verifique que el comentario del listado siga vigente y tenga soporte."),
          ("Retención con base bajo el mínimo",
-          "Se retuvo en una compra que no alcanza la base mínima de su concepto.",
-          "Retención sin causa, salvo que el concepto sea otro (revise el concepto indicado en la alerta)."),
-         ("Tarifa aplicada distinta a la de la cuenta",
-          "El nombre de la cuenta de retención trae un porcentaje (p. ej. \"Compras (2.5%)\") y lo retenido se aparta más "
-          "del 15 % de ese valor. Solo con una cuenta de retención en el comprobante.",
-          "Tarifa mal aplicada o base contable que incluye valores que no son base."),
-         ("Tarifa de retención atípica",
-          "Se retuvo más del 11 % de la base.",
-          "Ninguna tarifa común es tan alta: error de digitación o de cuenta."),
+          "Se retuvo en una compra que no alcanza la base mínima del concepto de la tabla.",
+          "Retención sin causa."),
+         ("Tarifa aplicada distinta a la tabla de retenciones",
+          "Lo retenido se aparta más del 15 % de la tarifa de la tabla.",
+          "Tarifa mal aplicada o base que incluye valores que no son base."),
          ("Cuenta de retención no corresponde al gasto",
           "La retención se registró con un concepto distinto al del gasto y uno de los dos es honorarios, arrendamientos o "
           "combustibles (p. ej. arriendo con retención de compras).",
@@ -358,9 +340,8 @@ GUIA_ALERTAS = (
           "Costo e IVA sin soporte: solicitar la factura o el documento soporte."),
          ("Gasto personal contabilizado",
           "Un comprobante contable tiene el Num.Ext (y NIT) de una factura DIAN que la hoja Contabilidad marca como gasto "
-          "personal (TIPO o concepto con \"PERSONAL\"). La fila contable y la de la DIAN quedan juntas en DIAN VS CONT.",
-          "Ese valor no es costo ni gasto deducible de la empresa (art. 107 E.T.) y su IVA no es descontable "
-          "(art. 488 E.T.). Reverse el registro o corrija el concepto en Contabilidad si no es personal."),
+          "personal (TIPO o concepto con \"PERSONAL\").",
+          "No es costo ni gasto deducible (art. 107 E.T.) y su IVA no es descontable (art. 488 E.T.)."),
      )),
     ("Comentarios del listado de autorretenedores (cómo se tratan)",
      "El programa busca estas palabras en el comentario de cada tercero del listado; gana la primera que coincida. "

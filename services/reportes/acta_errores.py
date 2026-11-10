@@ -306,8 +306,7 @@ class GeneradorActaErrores:
 
         elementos.append(Paragraph("4. ALERTAS TRIBUTARIAS", self.estilo_subtitulo))
         elementos.append(Paragraph(
-            "Situaciones tributarias que deben revisarse (retención en la fuente, IVA, soporte y periodo). "
-            "Una alerta no siempre es un error: indica un caso que requiere verificación con el soporte. "
+            "Errores tributarios detectados (retención en la fuente, IVA, soporte y periodo). "
             "Las diferencias menores a $50 o al 0,1 % del valor se ignoran.", self.estilo_normal))
 
         # Resumen por tipo de alerta, en el orden de la guía

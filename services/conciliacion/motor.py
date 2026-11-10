@@ -4,14 +4,14 @@ import pandas as pd
 
 from core.config import PERFIL_TRIBUTARIO_ACTIVO, TOKEN_SHEETS
 from core.errors import ErrorSistema, ErrorUsuario, HojaNoEncontradaError, Reportador, logger
-from data import parametros_repo
+from data import tabla_retenciones_repo
 from data.autorretenedores_repo import GestorAutorretenedores
 from shared.dataframes import buscar_columna, limpiar_encabezados, quitar_filas_vacias
 from shared.excel_io import cargar_hoja_encabezado_variable, hojas_de
 from shared.hojas import resolver_hojas
 from shared.totales import quitar_fila_totales
 from services.conciliacion import preparacion as prep
-from services.conciliacion.alertas import alertas_retencion, diccionario_autorretenedores
+from services.conciliacion.alertas import alertas_retencion, diccionario_autorretenedores, tipo_alerta
 from services.conciliacion.emparejamiento import unificar_dian_vs_cont
 from services.conciliacion.escritura import escribir_resultados
 from services.token_service import COLUMNAS_CALCULADAS, FormateadorToken
@@ -111,12 +111,9 @@ class ConciliadorAuditoria(Reportador):
             if not self.seriales_reteiva:
                 self._reportar("Sin columnas de reteIVA marcadas: se omite la validación de reteIVA.")
             self._reportar(f"Validando retenciones según perfil: {self.perfil.get('tipo') or 'sin definir'}...")
-        parametros = parametros_repo.cargar()
-        anio = max(parametros["uvt"])
-        desde, bases = parametros["bases"][-1]
-        valor_uvt = f"{parametros['uvt'][anio]:,.0f}".replace(",", ".")
-        self._reportar(f"  UVT {anio}: ${valor_uvt} | Vigencia desde {desde}: "
-                       + ", ".join(f"{c} {v:g}" for c, v in bases.items()) + " UVT")
+        reglas = tabla_retenciones_repo.cargar()
+        self._reportar(f"  Tabla de retenciones: {len(reglas)} concepto(s) revisado(s)" if reglas
+                       else "  Tabla de retenciones sin cuentas asignadas: no se revisan retenciones.")
         res = alertas_retencion(
             df_aud_comp, self.seriales_base, self.seriales_iva, self.seriales_ret, self.seriales_reteiva,
             diccionario_autorretenedores(df_autorretenedores), self.perfil,
@@ -125,7 +122,7 @@ class ConciliadorAuditoria(Reportador):
 
     def _reportar_alertas(self, alertas):
         textos = alertas[alertas != ''].str.split(' / ').explode()
-        conteo = textos.str.replace(r'\s*\((?!art\.).*?\)', '', regex=True).value_counts()
+        conteo = textos.map(lambda t: tipo_alerta(t) or t.split(':')[0]).value_counts()
         for texto, cantidad in conteo.items():
             self._reportar(f"  Alerta - {texto}: {cantidad}")
 

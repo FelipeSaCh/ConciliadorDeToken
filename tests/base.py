@@ -8,7 +8,8 @@ RAIZ = Path(__file__).resolve().parents[1]
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
-from data import parametros_repo  # noqa: E402
+from core.config import ASSETS_DIR  # noqa: E402
+from data import parametros_repo, tabla_retenciones_repo  # noqa: E402
 
 
 class PruebaBase(unittest.TestCase):
@@ -19,3 +20,7 @@ class PruebaBase(unittest.TestCase):
             parche = mock.patch.object(parametros_repo, nombre, side_effect=valor)
             parche.start()
             self.addCleanup(parche.stop)
+        parche = mock.patch.object(tabla_retenciones_repo, "cargar",
+                                   side_effect=lambda: tabla_retenciones_repo._desde_excel(ASSETS_DIR / "TABLA_DE_RETENCIONES.xlsx"))
+        parche.start()
+        self.addCleanup(parche.stop)
