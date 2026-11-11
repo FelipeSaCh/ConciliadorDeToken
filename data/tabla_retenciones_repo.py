@@ -1,4 +1,4 @@
-"""Tabla de retenciones (TABLA_DE_RETENCIONES.xlsx): solo los conceptos con cuenta asignada se revisan."""
+"""Tabla de retenciones (TABLA_DE_RETENCIONES.xlsx): conceptos con tarifa numérica; la cuenta (col. F) es opcional."""
 import re
 
 import pandas as pd
@@ -17,26 +17,37 @@ def _numero(valor):
         return None
 
 
+def _tipo(tipo, concepto):
+    """Tipo de NIT de la fila; sin valor en la tabla se deduce del concepto (declarantes/PJ, no declarantes/PN)."""
+    tipo = "" if pd.isna(tipo) else str(tipo).strip().upper()
+    if tipo:
+        return tipo
+    if re.search(r"no declarantes", concepto, re.I):
+        return "PN"
+    return "PJ" if re.search(r"\(declarantes\)|personas jur[ií]dicas", concepto, re.I) else ""
+
+
 def _desde_excel(ruta):
     df = pd.read_excel(ruta, header=0, usecols="A:F", dtype=object)
     df.columns = COLUMNAS[:len(df.columns)]
     reglas = []
     for f in df.to_dict("records"):
-        cuenta = codigo_cuenta(re.sub(r"\.0+$", "", str(f.get("cuenta") or "")))
-        if not cuenta:
+        concepto, tarifa = str(f["concepto"]).strip(), _numero(f["tarifa"])
+        if pd.isna(f["concepto"]) or tarifa is None:
             continue
+        cuenta = f.get("cuenta")
         reglas.append({
-            "concepto": str(f["concepto"]).strip(),
+            "concepto": concepto,
             "uvt": _numero(f["uvt"]) or 0.0,
-            "tarifa": _numero(f["tarifa"]),
-            "tipo": str(f.get("tipo") or "").strip().upper(),
-            "cuenta": cuenta,
+            "tarifa": tarifa,
+            "tipo": _tipo(f.get("tipo"), concepto),
+            "cuenta": "" if pd.isna(cuenta) else codigo_cuenta(re.sub(r"\.0+$", "", str(cuenta))),
         })
     return reglas
 
 
 def cargar():
-    """[{concepto, uvt, tarifa, tipo ('PJ'/'PN'/''), cuenta}] de los conceptos revisados."""
+    """[{concepto, uvt, tarifa, tipo ('PJ'/'PN'/''), cuenta ('' si no tiene)}] con tarifa numérica."""
     for ruta in (ARCHIVO_TABLA_RETENCIONES, ARCHIVO_TABLA_RETENCIONES_LOCAL, ASSETS_DIR / ARCHIVO_TABLA_RETENCIONES.name):
         try:
             if ruta.exists():

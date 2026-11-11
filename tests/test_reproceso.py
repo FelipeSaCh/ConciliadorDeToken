@@ -6,6 +6,7 @@ from unittest import mock
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.styles import Font, PatternFill
 
 from tests.base import PruebaBase
 from tests.libro_prueba import HOJAS, SERIALES, crear_libro
@@ -200,3 +201,43 @@ class TestFormatoToken(PruebaLibro):
         no_creado = [r for r in range(2, ws.max_row) if ws.cell(row=r, column=concepto).value == "CONCEPTO NO CREADO"]
         self.assertTrue(no_creado)
         self.assertTrue(ws.cell(row=no_creado[0], column=concepto).font.bold)
+
+class TestPersonalesEmitidos(PruebaLibro):
+    def test_emitido_no_es_personal(self):
+        ruta = crear_libro(self.dir / "libro.xlsx", tipos={"800333444": "PERSONAL"})
+        wb = load_workbook(ruta)
+        ws = wb["Token"]
+        grupo = [c.value for c in ws[1]].index("Grupo") + 1
+        for r in range(2, ws.max_row + 1):
+            ws.cell(row=r, column=grupo, value="Emitido")
+        wb.save(ruta)
+        self.assertEqual(FormateadorToken(ruta, HOJAS).ejecutar()["filas_personales"], 0)
+
+
+class TestFormatoUsuario(PruebaLibro):
+    def test_conserva_colores_y_separadores(self):
+        ruta = crear_libro(self.dir / "libro.xlsx")
+        FormateadorToken(ruta, HOJAS).ejecutar()
+        wb = load_workbook(ruta)
+        ws = wb["Token"]
+        orden = [ws.cell(row=r, column=3).value for r in range(2, 6)]
+        ws.insert_rows(4)
+        for c in range(1, ws.max_column + 1):
+            ws.cell(row=2, column=c).fill = PatternFill(start_color="00B0F0", end_color="00B0F0", fill_type="solid")
+        ws.cell(row=3, column=3).font = Font(bold=True)
+        wb.save(ruta)
+        for _ in range(2):
+            self.conciliar(ruta)
+            ws = load_workbook(ruta)["Token"]
+            self.assertEqual([ws.cell(row=r, column=3).value for r in (2, 3, 5, 6)], orden)
+            self.assertTrue(all(ws.cell(row=4, column=c).value is None for c in range(1, ws.max_column + 1)))
+            self.assertTrue(str(ws.cell(row=2, column=1).fill.fgColor.rgb).endswith("00B0F0"))
+            self.assertTrue(ws.cell(row=3, column=3).font.b)
+            self.assertIsNone(ws.cell(row=3, column=1).fill.fill_type)
+
+    def test_sin_formato_del_usuario_se_ordena(self):
+        ruta = crear_libro(self.dir / "libro.xlsx")
+        FormateadorToken(ruta, HOJAS).ejecutar()
+        self.mensajes.clear()
+        self.conciliar(ruta)
+        self.assertIn("Ordenando registros por Grupo, Tipo de Documento y Personales...", self.mensajes)

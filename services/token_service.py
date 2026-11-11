@@ -1,3 +1,4 @@
+from copy import copy
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,27 @@ ANCHOS_FIJOS = {'CUFE/CUDE': 18}
 FILAS_MUESTRA_ANCHO = 2000
 COLOR_ENCABEZADO, COLOR_ENCABEZADO_CALCULADO = "1F4E78", "375623"
 COLOR_PERSONAL, COLOR_NO_CREADO, COLOR_TOTALES = "FFCCFF", "FCE4D6", "DDEBF7"
+COLORES_PROGRAMA = {COLOR_PERSONAL, COLOR_NO_CREADO, COLOR_TOTALES}  # rellenos que pone el formateo (no del usuario)
+FUENTES_PROGRAMA = {"FF0000", "C00000"}  # nota crédito y 'NO CREADO'
+FILA_ORIGEN = "_FILA_ORIGEN"  # fila de Excel de cada registro antes de formatear
+
+
+def _color(color):
+    rgb = getattr(color, "rgb", None) if color is not None else None
+    return rgb[-6:].upper() if isinstance(rgb, str) else None
+
+
+def _estilo_usuario(celda, fuente_defecto):
+    """(relleno, fuente, borde) puestos por el usuario en la celda; None en lo que es del programa o por defecto."""
+    relleno = celda.fill
+    relleno = copy(relleno) if relleno.fill_type not in (None, "none", "gray125") and (
+        _color(relleno.fgColor) not in COLORES_PROGRAMA) else None
+    fuente = celda.font
+    fuente = copy(fuente) if fuente != fuente_defecto and not (
+        _color(fuente.color) in FUENTES_PROGRAMA and not fuente.i and not fuente.u and not fuente.strike) else None
+    borde = celda.border
+    borde = copy(borde) if any(getattr(borde, l).style for l in ("left", "right", "top", "bottom")) else None
+    return (relleno, fuente, borde) if relleno or fuente or borde else None
 
 
 class FormateadorToken(Reportador):
@@ -92,13 +114,16 @@ class FormateadorToken(Reportador):
         self._reportar("Cargando hoja principal (Token)...")
         try:
             df_principal = quitar_fila_totales(limpiar_encabezados(pd.read_excel(self.file_path, sheet_name=nombre_principal)))
-            df_principal = df_principal.dropna(how="all").reset_index(drop=True)
+            df_principal = df_principal.dropna(how="all")
             self._validar_columnas(df_principal, self.COLUMNAS_REQUERIDAS_PRINCIPAL, nombre_principal)
         except ColumnaFaltanteError:
             raise
         except Exception as e:
             raise ErrorSistema(f"Error leyendo la hoja principal: {e}") from e
         columnas_originales = df_principal.columns.tolist()
+        df_principal[FILA_ORIGEN] = df_principal.index + 2
+        df_principal = df_principal.reset_index(drop=True)
+        tabla_info, estilos, separadores = self._leer_hoja_existente(nombre_principal, df_principal[FILA_ORIGEN])
 
         df_conta = self._cargar_hoja_nit("contabilidad", hojas_excel)
         df_tercer = self._cargar_hoja_nit("terceros", hojas_excel)
@@ -116,18 +141,32 @@ class FormateadorToken(Reportador):
         self._reportar(f"  Personales: {int(es_personales.sum())} | Concepto no creado: {no_creados} | "
                        f"Tercero no creado: {int((df_full['TERCERO'] == 'NO CREADO').sum())}")
 
-        self._reportar("Ordenando registros por Grupo, Tipo de Documento y Personales...")
         df_export = df_full[self._orden_columnas(columnas_originales)].copy()
         df_export["_ES_PERSONAL"] = es_personales.values
-        df_export = self._ordenar_jerarquico(df_export)
+        df_export[FILA_ORIGEN] = df_full[FILA_ORIGEN].values
+        if estilos or separadores:
+            self._reportar(f"Se conserva el orden, las filas de separación ({len(separadores)}) y los colores que ya "
+                           "tenía la hoja Token.")
+            df_export = df_export.sort_values(FILA_ORIGEN, kind="stable")
+        else:
+            self._reportar("Ordenando registros por Grupo, Tipo de Documento y Personales...")
+            df_export = self._ordenar_jerarquico(df_export)
+        n_registros = len(df_export)
+        df_export = df_export.set_index(FILA_ORIGEN)
+        if separadores:
+            df_export = df_export.reindex(sorted(set(df_export.index) | set(separadores)))
+            df_export["_ES_PERSONAL"] = df_export["_ES_PERSONAL"].fillna(False).astype(bool)
+        filas_origen = df_export.index.tolist()
+        df_export = df_export.reset_index(drop=True)
         es_personales_ordenado = df_export.pop("_ES_PERSONAL")
+        estilos_filas = [estilos.get(f, {}) for f in filas_origen]
 
         self._reportar("Escribiendo hoja Token formateada...")
-        self._escribir_excel(nombre_principal, df_export, es_personales_ordenado)
+        self._escribir_excel(nombre_principal, df_export, es_personales_ordenado, tabla_info, estilos_filas)
 
         self._reportar("Formateo de Token completado con éxito.")
         return {
-            "filas_procesadas": len(df_export),
+            "filas_procesadas": n_registros,
             "filas_personales": int(es_personales_ordenado.sum()),
             "escrito": True,
             "hojas": dict(self.sheet_names),
@@ -220,25 +259,44 @@ class FormateadorToken(Reportador):
         df['BASE'] = np.where(total == 0, 0, total - iva)
         return es_personal(df)
 
-    def _info_tabla_existente(self, nombre_hoja):
+    def _leer_hoja_existente(self, nombre_hoja, filas_datos):
+        """(tabla de Excel, {fila: {columna: estilo del usuario}}, filas en blanco entre registros) de la hoja actual.
+        Los estilos que pone el propio formateo no cuentan como del usuario."""
+        tabla_info, estilos, separadores = None, {}, []
         try:
             wb = load_workbook(self.file_path)
             try:
-                if nombre_hoja in wb.sheetnames and wb[nombre_hoja].tables:
-                    nombre, tbl = next(iter(wb[nombre_hoja].tables.items()))
-                    return nombre, tbl.headerRowCount, tbl.totalsRowCount, tbl.tableStyleInfo
+                if nombre_hoja not in wb.sheetnames:
+                    return tabla_info, estilos, separadores
+                ws = wb[nombre_hoja]
+                if ws.tables:
+                    nombre, tbl = next(iter(ws.tables.items()))
+                    tabla_info = nombre, tbl.headerRowCount, tbl.totalsRowCount, tbl.tableStyleInfo
+                datos = set(filas_datos)
+                if not datos:
+                    return tabla_info, estilos, separadores
+                encabezados = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
+                fuente_defecto = wb._fonts[0]
+                for fila in ws.iter_rows(min_row=2, max_row=max(datos), max_col=len(encabezados)):
+                    r = fila[0].row
+                    if r not in datos and any(c.value not in (None, "") for c in fila):
+                        continue  # fila de totales u otra no leída como registro
+                    if r not in datos:
+                        separadores.append(r)
+                    por_col = {n: e for n, c in zip(encabezados, fila) if n and (e := _estilo_usuario(c, fuente_defecto))}
+                    if por_col:
+                        estilos[r] = por_col
             finally:
                 wb.close()
-        except Exception:
-            pass
-        return None
+        except Exception as e:
+            logger.warning(f"No se pudo leer el formato actual de la hoja '{nombre_hoja}': {e}")
+        return tabla_info, estilos, separadores
 
-    def _escribir_excel(self, nombre_principal, df_export, es_personales):
+    def _escribir_excel(self, nombre_principal, df_export, es_personales, tabla_info=None, estilos=None):
         try:
-            tabla_info = self._info_tabla_existente(nombre_principal)
             with escritor_excel(self.file_path, hoja_activa=nombre_principal) as writer:
                 df_export.to_excel(writer, index=False, sheet_name=nombre_principal)
-                self._dar_formato(writer.sheets[nombre_principal], df_export, es_personales, tabla_info)
+                self._dar_formato(writer.sheets[nombre_principal], df_export, es_personales, tabla_info, estilos)
         except (ErrorUsuario, ErrorSistema):
             raise
         except Exception as e:
@@ -262,7 +320,7 @@ class FormateadorToken(Reportador):
         extra = 2 if nombre.upper() in ('CONCEPTO', 'TERCERO') else 0  # se resaltan en negrita
         return min(max(largo_datos, largo_titulo, ANCHO_MINIMO - 2) + 2 + extra, ANCHO_MAXIMO)
 
-    def _dar_formato(self, sheet, df_export, es_personales, tabla_info):
+    def _dar_formato(self, sheet, df_export, es_personales, tabla_info, estilos=None):
         """Encabezado legible (calculadas en verde, con nota), anchos según el contenido, formatos de número y
         fecha, filtros, personales en rosado, notas crédito en rojo y 'NO CREADO' resaltado."""
         n_filas, n_cols = len(df_export), len(df_export.columns)
@@ -304,6 +362,18 @@ class FormateadorToken(Reportador):
                 if formato:
                     celda.number_format = formato
                 celda.alignment = alineacion
+
+        # Colores, fuentes y bordes que ya tenía el usuario (se aplican antes de las marcas del programa)
+        for r, por_col in enumerate(estilos or [], start=2):
+            for idx, nombre in enumerate(columnas, start=1):
+                relleno, fuente, borde = por_col.get(nombre) or (None, None, None)
+                celda = sheet.cell(row=r, column=idx)
+                if relleno:
+                    celda.fill = relleno
+                if fuente:
+                    celda.font = fuente
+                if borde:
+                    celda.border = borde
 
         # Personales (fila rosada) y notas crédito (fuente roja)
         fill_personal = PatternFill(start_color=COLOR_PERSONAL, end_color=COLOR_PERSONAL, fill_type="solid")

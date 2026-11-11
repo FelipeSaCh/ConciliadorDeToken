@@ -42,10 +42,17 @@ def contiene(serie, texto):
 
 
 def es_personal(df):
-    """Gasto personal: CONCEPTO (TIPO + DETALLE de Contabilidad) o TIPO contienen 'PERSONAL'. Misma regla en el
-    formateo del Token, la conciliación y el informe de IVA."""
+    """Gasto personal: CONCEPTO (TIPO + DETALLE de Contabilidad) o TIPO contienen 'PERSONAL'. Los Emitidos (ventas)
+    no son gasto personal, salvo el documento soporte (compra a no obligados). Misma regla en el formateo del Token,
+    la conciliación y el informe de IVA."""
     marca = pd.Series(False, index=df.index)
     for col in ('CONCEPTO', 'TIPO'):
         if col in df.columns:
             marca |= df[col].fillna('').astype(str).str.upper().str.contains('PERSONAL', regex=False)
+    col_grupo, col_doc = buscar_columna(df.columns, 'Grupo'), buscar_columna(df.columns, 'Tipo de documento')
+    if col_grupo:
+        emitido = contiene(df[col_grupo], 'emitido')
+        if col_doc:
+            emitido &= ~contiene(df[col_doc], 'soporte')
+        marca &= ~emitido
     return marca

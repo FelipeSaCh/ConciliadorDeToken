@@ -189,7 +189,8 @@ ETIQUETAS_TRATAMIENTO = {
 COMENTARIOS_NO_SUJETOS = tuple(k for k, t, _ in TRATAMIENTOS_LISTADO if t == "no_sujeto")
 TARIFA_RETENCION_AGROPECUARIO = 0.015
 # Cuentas de costo/gasto/activo que registran impuestos (consumo, saludables, IVA llevado al costo): no son base de retención
-PATRON_IMPUESTO_EN_COSTO = r"\bIVA\b|IMPOCONSUMO|IMPUESTO\s*(NACIONAL\s*)?(AL\s*)?CONSUMO|SALUDABLE|ULTRAPROCESAD|AZUCARAD|\bINC\b|\bICUI\b|\bIBUA\b|BOLSAS?\s*PL"
+PATRON_IMPUESTO_EN_COSTO = (r"^\W*\d*\W*IVA\b|\bIVA\s+(MAYOR|NO\s+DESC|LLEVAD|ASUMID|AL\s+(COSTO|GASTO)|EN\s+EL\s+(COSTO|GASTO))"
+                            r"|IMPOCONSUMO|IMPUESTO\s*(NACIONAL\s*)?(AL\s*)?CONSUMO|SALUDABLE|ULTRAPROCESAD|AZUCARAD|\bINC\b|\bICUI\b|\bIBUA\b|BOLSAS?\s*PL")  # "responsable de iva" no es impuesto
 CONCEPTOS_ESTRICTOS = ("honorarios", "arrendamientos", "combustibles")  # su cruce con otra cuenta de retención se alerta
 TOLERANCIA_TARIFA_RETENCION = 0.15  # desviación relativa admitida frente a la tarifa del nombre de la cuenta
 TARIFA_MAXIMA_RETENCION = 0.11
@@ -235,7 +236,7 @@ INFO_PERIODICIDAD_IVA = (
 # Parámetros tributarios editables desde la app (UVT y bases mínimas). Los valores de arriba son los de fábrica.
 ARCHIVO_PARAMETROS = CARPETA_AUTORRETENEDORES / "parametros_tributarios.json"
 ARCHIVO_PARAMETROS_LOCAL = BASE_DIR / "parametros_tributarios.json"
-# Tabla de retenciones: solo se revisan los conceptos con cuenta (col. F); tarifa y base (UVT) salen de la tabla
+# Tabla de retenciones: tarifa y base (UVT) por cuenta de retención (col. F) o por concepto de la cuenta
 ARCHIVO_TABLA_RETENCIONES = CARPETA_AUTORRETENEDORES / "TABLA_DE_RETENCIONES.xlsx"
 ARCHIVO_TABLA_RETENCIONES_LOCAL = BASE_DIR / "TABLA_DE_RETENCIONES.xlsx"
 CONCEPTOS_BASE_MINIMA = ("compras", "servicios", "arrendamientos", "honorarios", "combustibles", "agropecuario")
@@ -288,8 +289,10 @@ INFO_CONCEPTOS = (
 # Guía de alertas (botón "?" en Conciliar y capítulo 11 del manual): (sección, nota, [(alerta, cuándo aparece, qué significa)])
 GUIA_ALERTAS = (
     ("Retención en la fuente (cada comprobante contable)",
-     "Solo se revisan los conceptos de TABLA_DE_RETENCIONES.xlsx que tienen cuenta asignada; base mínima (UVT) y tarifa "
-     "salen de la tabla según el tipo de NIT (PJ: NIT 8/9 de 9 dígitos; PN: cédula). La base es la suma de las cuentas "
+     "Base mínima (UVT) y tarifa salen de TABLA_DE_RETENCIONES.xlsx: la fila con la cuenta de retención usada (col. F); "
+     "si no tiene, la del concepto de la cuenta (2365xx o gasto) que coincide con la tarifa y el nombre de la cuenta de "
+     "retención o, en su defecto, la general (compras 10 UVT, servicios 2 UVT), según el tipo de NIT (PJ: NIT 8/9 de 9 "
+     "dígitos; PN: cédula). La base mínima se aproxima al múltiplo de $1.000 (art. 868 E.T.). La base es la suma de las cuentas "
      "marcadas como Base, sin impuestos llevados al costo.",
      (
          ("Sin retención",

@@ -113,7 +113,7 @@ class ConciliadorAuditoria(Reportador):
             self._reportar(f"Validando retenciones según perfil: {self.perfil.get('tipo') or 'sin definir'}...")
         reglas = tabla_retenciones_repo.cargar()
         self._reportar(f"  Tabla de retenciones: {len(reglas)} concepto(s) revisado(s)" if reglas
-                       else "  Tabla de retenciones sin cuentas asignadas: no se revisan retenciones.")
+                       else "  Tabla de retenciones no disponible: no se revisan retenciones.")
         res = alertas_retencion(
             df_aud_comp, self.seriales_base, self.seriales_iva, self.seriales_ret, self.seriales_reteiva,
             diccionario_autorretenedores(df_autorretenedores), self.perfil,

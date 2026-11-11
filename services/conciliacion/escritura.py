@@ -10,7 +10,7 @@ from core.config import (
     ALERTA_FILL_COLOR, DUPLICADO_FILL_COLOR, OUTPUT_SHEETS_TO_HIDE, PERFIL_TRIBUTARIO_ACTIVO, RED_FILL_COLOR,
 )
 from core.errors import ErrorSistema, ErrorUsuario
-from services.conciliacion.alertas import COL_ALERTAS, diccionario_autorretenedores
+from services.conciliacion.alertas import COL_ALERTAS, COL_DETALLE_RET, COL_TARIFA_RET, diccionario_autorretenedores
 from shared.excel_io import escritor_excel
 from shared.texto import VALORES_NULOS, normalizar_nit
 from shared.totales import agregar_fila_totales_ws, quitar_filas_totales_ws
@@ -23,6 +23,8 @@ COLUMNAS_INYECTADAS = [
     ('OTROS IMPUESTOS', 'otros', "FFC000", '#,##0.00'),
     ('RETENCIONES', 'ret', "F4B183", '#,##0.00'),
     ('RETEFUENTE', 'retefuente', "cc99ff", '#,##0.00'),
+    (COL_TARIFA_RET, 'tarifa_ret', "cc99ff", None),
+    (COL_DETALLE_RET, 'detalle_ret', "cc99ff", None),
     ('RETEIVA', 'reteiva', "F472B6", '#,##0.00'),
     ('ALERTA', 'alerta', ALERTA_FILL_COLOR, None),
 ]
@@ -193,6 +195,8 @@ def inyectar_columnas(wb, nombre_hoja, df_res, dict_auto):
             'otros': calc.get('OTROS IMPUESTOS', 0),
             'ret': calc.get('RETENCIONES', 0),
             'retefuente': calc.get('RETEFUENTE', 0),
+            'tarifa_ret': calc.get(COL_TARIFA_RET, ''),
+            'detalle_ret': calc.get(COL_DETALLE_RET, ''),
             'reteiva': calc.get('RETEIVA', 0),
             'alerta': calc.get('ALERTA', ''),
             'auto': dict_auto.get(nit, ''),

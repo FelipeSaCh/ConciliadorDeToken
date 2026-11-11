@@ -10,14 +10,23 @@ from core.config import (
     TIPOS_CONTRIBUYENTE, TOLERANCIA_RELATIVA, TOLERANCIA_TARIFA_RETENCION, TRATAMIENTOS_LISTADO, UMBRAL_TOLERANCIA,
 )
 from data import parametros_repo, tabla_retenciones_repo
-from shared.cuentas import codigo_cuenta
+from shared.cuentas import codigo_cuenta, nombre_cuenta
 from shared.dataframes import a_numero, buscar_columna, contiene, sumar_columnas
-from shared.texto import normalizar_nit
+from shared.texto import normalizar_ascii, normalizar_nit
 
 COL_ALERTAS = 'Alertas'
 NO_RESPONSABLE_IVA = "No responsable de IVA"
 PERIODOS_IVA = {"Bimestral": (2, 3), "Cuatrimestral": (4, 1)}  # (meses por periodo, periodos siguientes permitidos)
 PATRON_NOTA_CREDITO = r'cr[eé]dito'
+COL_TARIFA_RET, COL_DETALLE_RET = '% RETENCION', 'DETALLE RETENCION'
+# Concepto de la tabla de retenciones (gana la primera coincidencia) y fila general de cada concepto
+FAMILIAS_TABLA = (
+    ('agropecuario', r'agr[ií]col.*sin procesamiento'), ('combustibles', r'combustible'),
+    ('honorarios', r'^honorarios'), ('arrendamientos', r'^arrendamiento'), ('servicios', r'^servicios'),
+    ('compras', r'^compras'),
+)
+FILA_GENERAL = {'compras': r'generales', 'servicios': r'generales', 'arrendamientos': r'inmuebles',
+                'honorarios': r'jur[ií]dicas|no declarantes'}
 
 
 def agregar_alerta(serie, mask, texto):
@@ -103,20 +112,63 @@ def tipo_persona(nit):
 def _reglas_tabla(mapa_retencion):
     reglas = tabla_retenciones_repo.cargar()
     for r in reglas:
-        r['clave'] = ('agropecuario' if re.search(r'agr[ií]col.*sin procesamiento', r['concepto'], re.I)
-                      else _concepto_cuenta(r['cuenta'], mapa_retencion, ''))
+        familia = next((k for k, patron in FAMILIAS_TABLA if re.search(patron, r['concepto'], re.I)), '')
+        r['clave'] = (familia if familia == 'agropecuario' or not r['cuenta']
+                      else _concepto_cuenta(r['cuenta'], mapa_retencion, '') or familia)
     return reglas
 
 
-def _regla(reglas, tipo, cuenta='', clave=''):
-    """Regla de la tabla por cuenta de retención (prefijo más largo) o, sin cuenta, por concepto; prima el tipo de NIT."""
+def tarifa_de_nombre(nombre):
+    """Tarifa escrita en el nombre de la cuenta ('Compras (2.5%)' -> 0.025) o None."""
+    m = re.search(r'(\d+(?:[.,]\d+)?)\s*%', str(nombre))
+    return float(m.group(1).replace(',', '.')) / 100 if m else None
+
+
+def _palabras(texto):
+    return {p for p in re.findall(r'[a-z]{4,}', normalizar_ascii(texto))}
+
+
+def _regla(reglas, tipo, cuenta='', clave='', nombre=''):
+    """Regla de la tabla: por cuenta de retención con cuenta en la tabla (prefijo más largo); si no, entre las filas
+    del concepto, la que coincide con la tarifa y las palabras del nombre de la cuenta de retención o, en su defecto,
+    la fila general. Prima el tipo de NIT."""
+    candidatas = []
     if cuenta:
-        candidatas = [r for r in reglas if cuenta.startswith(r['cuenta'])]
+        candidatas = [r for r in reglas if r['cuenta'] and cuenta.startswith(r['cuenta'])]
         largo = max((len(r['cuenta']) for r in candidatas), default=0)
         candidatas = [r for r in candidatas if len(r['cuenta']) == largo]
-    else:
+    if not candidatas:
         candidatas = [r for r in reglas if clave and r['clave'] == clave]
-    return next((r for r in candidatas if r['tipo'] in (tipo, '')), candidatas[0] if candidatas else None)
+    candidatas = [r for r in candidatas if r['tipo'] in (tipo, '')] or candidatas
+    if not candidatas:
+        return None
+    tarifa, palabras, general = tarifa_de_nombre(nombre), _palabras(nombre), FILA_GENERAL.get(clave, '')
+    return max(candidatas, key=lambda r: (tarifa is not None and abs(r['tarifa'] - tarifa) < 1e-6,
+                                          len(palabras & _palabras(r['concepto'])),
+                                          bool(general and re.search(general, r['concepto'], re.I)),
+                                          r['tipo'] == tipo))
+
+
+def base_minima(uvt_concepto, uvt_anio):
+    """UVT del concepto × UVT del año, aproximada al múltiplo de $1.000 más cercano (art. 868 E.T.)."""
+    return float(np.floor(uvt_concepto * uvt_anio / 1000 + 0.5) * 1000)
+
+
+def _detalle_cuenta(columna):
+    """'236540005 - Compras (2.5%)' -> 'Compras (2.5%)'; solo código -> nombre del PUC."""
+    return re.sub(r'^\s*\d+\s*[-–:.]?\s*', '', str(columna)).strip() or nombre_cuenta(columna) or str(columna)
+
+
+def detalle_retencion(valores, base):
+    """(tarifas, detalles) de las cuentas de retención con valor, de mayor a menor, separadas por ' / '. La tarifa
+    sale del nombre de la cuenta; si no la trae, se calcula sobre la base."""
+    cuentas = valores[valores > UMBRAL_TOLERANCIA].sort_values(ascending=False)
+    tarifas = []
+    for columna, valor in cuentas.items():
+        tarifa = tarifa_de_nombre(columna)
+        tarifa = tarifa if tarifa is not None else (valor / base if base else None)
+        tarifas.append(_porcentaje(tarifa) if tarifa is not None else '')
+    return ' / '.join(t for t in tarifas if t), ' / '.join(_detalle_cuenta(c) for c in cuentas.index)
 
 
 def a_fecha(serie):
@@ -140,7 +192,15 @@ def alertas_retencion(df_aud, seriales_base, seriales_iva, seriales_ret, seriale
     idx = df_aud.index
     retencion, reteiva, iva = (_suma_abs(df_aud, s) for s in (seriales_ret, seriales_reteiva, seriales_iva))
     alertas = pd.Series('', index=idx)
-    resultado = pd.DataFrame({'RETEFUENTE': retencion, 'RETEIVA': reteiva, 'ALERTA': alertas})
+    resultado = pd.DataFrame({'RETEFUENTE': retencion, COL_TARIFA_RET: '', COL_DETALLE_RET: '', 'RETEIVA': reteiva,
+                              'ALERTA': alertas})
+    cols_ret = [c for c in seriales_ret if c in df_aud.columns]
+    if cols_ret and not df_aud.empty:
+        valores_ret = df_aud[cols_ret].apply(pd.to_numeric, errors='coerce').fillna(0).abs()
+        base_total = _suma_abs(df_aud, seriales_base)
+        detalle = [detalle_retencion(valores_ret.loc[i], base_total.loc[i]) for i in idx]
+        resultado[COL_TARIFA_RET] = [t for t, _ in detalle]
+        resultado[COL_DETALLE_RET] = [d for _, d in detalle]
 
     if (perfil or {}).get('periodicidad') == NO_RESPONSABLE_IVA:
         agregar_alerta(alertas, iva > UMBRAL_TOLERANCIA, 'IVA descontable en empresa no responsable de IVA')
@@ -173,11 +233,9 @@ def alertas_retencion(df_aud, seriales_base, seriales_iva, seriales_ret, seriale
     agregar_alerta(alertas, (nit != '') & (iva > UMBRAL_TOLERANCIA) & (base <= UMBRAL_TOLERANCIA), 'IVA sin base gravada')
 
     # Concepto: cuenta de retención usada > historial del tercero > cuenta de gasto
-    cols_ret = [c for c in seriales_ret if c in df_aud.columns]
     concepto_ret, col_ret = pd.Series('', index=idx), pd.Series(None, index=idx, dtype=object)
     unica = pd.Series(False, index=idx)
     if cols_ret:
-        valores_ret = df_aud[cols_ret].apply(pd.to_numeric, errors='coerce').fillna(0).abs()
         unica = (valores_ret > UMBRAL_TOLERANCIA).sum(axis=1) == 1
         col_ret = valores_ret.idxmax(axis=1).where(retencion > UMBRAL_TOLERANCIA)
         concepto_ret = col_ret.map(lambda c: _concepto_cuenta(c, conceptos['retencion'], '') if isinstance(c, str) else '')
@@ -188,23 +246,28 @@ def alertas_retencion(df_aud, seriales_base, seriales_iva, seriales_ret, seriale
     agro = en_listado & (tratamiento == 'agropecuario')
     concepto = concepto.where(~agro, 'agropecuario')
 
-    # Tabla de retenciones: solo se revisan los conceptos con cuenta asignada
+    # Tabla de retenciones: fila según la cuenta de retención usada (o la del historial del tercero) y su concepto
     reglas = _reglas_tabla(conceptos['retencion'])
     persona = tipo_persona(nit)
-    cuenta_usada = col_ret.map(lambda c: codigo_cuenta(c) if isinstance(c, str) else '')
-    historial_cuenta = cuenta_usada[con_concepto].groupby(nit[con_concepto]).agg(lambda s: s.mode().iat[0])
-    cuenta_ref = cuenta_usada.where(con_concepto, nit.map(historial_cuenta)).fillna('').where(~agro, '')
+    nombre_ret = col_ret.where(con_concepto)
+    historial_ret = nombre_ret[con_concepto].groupby(nit[con_concepto]).agg(lambda s: s.mode().iat[0])
+    nombre_ret = nombre_ret.where(con_concepto, nit.map(historial_ret)).where(~agro).fillna('')
+    cuenta_ref = nombre_ret.map(codigo_cuenta)
     clave = concepto.replace('mixto', 'compras')
-    regla = pd.Series([_regla(reglas, p, c, k) for p, c, k in zip(persona, cuenta_ref, clave)], index=idx, dtype=object)
-    regla = regla.where(regla.notna() | con_concepto, pd.Series([_regla(reglas, p, '', k) for p, k in zip(persona, clave)],
-                                                 index=idx, dtype=object))
+    regla = pd.Series([_regla(reglas, p, c, k, n) for p, c, k, n in zip(persona, cuenta_ref, clave, nombre_ret)],
+                      index=idx, dtype=object)
     revisado = regla.notna()
     parametros = parametros_repo.cargar()
     anio = fecha.dt.year.fillna(date.today().year).astype(int)
-    base_min = pd.Series([r['uvt'] * parametros_repo.uvt_vigente(parametros, a) if r else np.nan
+    base_min = pd.Series([base_minima(r['uvt'], parametros_repo.uvt_vigente(parametros, a)) if r else np.nan
                           for r, a in zip(regla, anio)], index=idx, dtype=float)
     tarifa = pd.Series([r['tarifa'] if r else np.nan for r in regla], index=idx, dtype=float)
+    # Cédula: no se sabe si declara renta; también vale la tarifa de declarante (fila PJ/declarantes)
+    tarifa_declarante = pd.Series([(_regla(reglas, 'PJ', c, k, n) or {}).get('tarifa', np.nan) if p == 'PN' else np.nan
+                                   for p, c, k, n in zip(persona, cuenta_ref, clave, nombre_ret)], index=idx, dtype=float)
     etiqueta = regla.map(lambda r: _corto(r['concepto'], 45) if r else '')
+    cifras = base_ret.map(_pesos) + pd.Series(np.where(base_ret >= base_min, ' ≥ ', ' < '), index=idx) \
+        + base_min.map(lambda v: _pesos(v) if pd.notna(v) else '')
     supera = revisado & (base_ret >= base_min)
     simple = tipo.str.contains('SIMPLE', na=False) | comentario.str.contains('SIMPLE', na=False)
     agente_rf, agente_iva = agentes_retencion(perfil)
@@ -218,15 +281,18 @@ def alertas_retencion(df_aud, seriales_base, seriales_iva, seriales_ret, seriale
             reducida = en_listado & (tratamiento == 'tarifa_reducida')
             sujeto = revisado & con_base & ~no_sujeto
             agregar_alerta(alertas, sujeto & ~observado & supera & ~con_ret,
-                           'Sin retención: la base supera el mínimo de ' + etiqueta)
+                           'Sin retención: la base supera el mínimo de ' + etiqueta + ' (' + cifras + ')')
             agregar_alerta(alertas, revisado & con_base & no_sujeto & con_ret,
                            'Retención practicada a no sujeto ('
                            + comentario.map(lambda c: _corto(c, 30)).where(~(simple & ~en_listado), 'RÉGIMEN SIMPLE') + ')')
             agregar_alerta(alertas, sujeto & con_ret & (base_ret < base_min),
-                           'Retención con base bajo el mínimo de ' + etiqueta)
+                           'Retención con base bajo el mínimo de ' + etiqueta + ' (' + cifras + ')')
 
             esperada = tarifa.where(~reducida, np.nan)
-            desvio = (retencion - base_ret * esperada).abs() > np.maximum(UMBRAL_TOLERANCIA, base_ret * esperada * TOLERANCIA_TARIFA_RETENCION)
+
+            def _desvio(t):
+                return (retencion - base_ret * t).abs() > np.maximum(UMBRAL_TOLERANCIA, base_ret * t * TOLERANCIA_TARIFA_RETENCION)
+            desvio = _desvio(esperada) & (tarifa_declarante.isna() | _desvio(tarifa_declarante))
             aplicada = (retencion / base_ret.replace(0, np.nan)).map(lambda v: _porcentaje(v) if pd.notna(v) else '')
             agregar_alerta(alertas, sujeto & con_ret & unica & esperada.notna() & desvio,
                            'Tarifa aplicada distinta a la tabla (' + aplicada + ' vs '

@@ -49,11 +49,44 @@ class TestAlertasRetencion(PruebaBase):
         [a] = evaluar([(PJ, 5_000_000, 50_000)])
         self.assertEqual(tipos(a), ["Tarifa aplicada distinta a la tabla de retenciones"])
 
-    def test_cuenta_fuera_de_la_tabla_no_se_revisa(self):
-        self.assertEqual(evaluar([(PJ, 300_000, 50_000)], cuenta_ret=RETE_FUERA), [[]])
+    def test_servicios_por_la_cuenta_de_retencion(self):
+        self.assertEqual(evaluar([(PJ, 300_000, 12_000)], cuenta_ret=RETE_FUERA), [[]])
+        [a] = evaluar([(PJ, 300_000, 50_000)], cuenta_ret=RETE_FUERA)
+        self.assertEqual(tipos(a), ["Tarifa aplicada distinta a la tabla de retenciones"])
+        [a] = evaluar([(PJ, 100_000, 4_000)], cuenta_ret=RETE_FUERA)
+        self.assertEqual(tipos(a), ["Retención con base bajo el mínimo"])
+        self.assertIn("Servicios generales", a[0])
+        self.assertIn("$105.000", a[0])
+        self.assertEqual(evaluar([(PJ, 105_000, 4_200)], cuenta_ret=RETE_FUERA), [[]])
 
-    def test_concepto_sin_cuenta_en_tabla_no_se_revisa(self):
-        self.assertEqual(evaluar([(PJ, 5_000_000, 0)], gasto=HONORARIOS), [[]])
+    def test_servicio_especifico_por_el_nombre_de_la_cuenta(self):
+        self.assertEqual(evaluar([(PJ, 2_000_000, 20_000)], cuenta_ret="236525010 - Transporte de carga (1%)"), [[]])
+
+    def test_base_minima_de_compras_aproximada_a_miles(self):
+        self.assertEqual(evaluar([(PJ, 523_800, 0)]), [[]])
+        [a] = evaluar([(PJ, 524_000, 0)])
+        self.assertIn("$524.000", a[0])
+        [a] = evaluar([(PJ, 523_800, 13_095)])
+        self.assertEqual(tipos(a), ["Retención con base bajo el mínimo"])
+
+    def test_cuenta_responsable_de_iva_es_base(self):
+        [a] = evaluar([(PJ, 300_000, 0)], gasto="513550001 - Transporte, fletes y acarreos responsable de iva",
+                      cuenta_ret=RETE_FUERA)
+        self.assertEqual(tipos(a), ["Sin retención"])
+        self.assertEqual(evaluar([(PJ, 5_000_000, 125_000)], gasto="621001001 - Compra materia prima responsable de iva 19%"),
+                         [[]])
+
+    def test_honorarios_sin_base_minima(self):
+        [a] = evaluar([(PJ, 5_000_000, 0)], gasto=HONORARIOS)
+        self.assertEqual(tipos(a), ["Sin retención"])
+        self.assertIn("Honorarios", a[0])
+
+    def test_tarifa_y_detalle_de_la_retencion(self):
+        df = pd.DataFrame([{"Nit/C.C.": PJ, "Tipo": "FC1", "Fecha": "2026-09-10", GASTO: b, RETE: r, RETE_FUERA: s}
+                           for b, r, s in ((5_000_000, 125_000, 0), (5_000_000, 50_000, 100_000), (5_000_000, 0, 0))])
+        res = alertas_retencion(df, [GASTO], [], [RETE, RETE_FUERA], [], LISTADO, {})
+        self.assertEqual(res["% RETENCION"].tolist(), ["2,50 %", "4,00 % / 2,50 %", ""])
+        self.assertEqual(res["DETALLE RETENCION"].tolist(), ["Compras (2.5%)", "Servicios (4%) / Compras (2.5%)", ""])
 
     def test_no_sujetos(self):
         self.assertEqual(evaluar([("860001942", 5_000_000, 0)]), [[]])
